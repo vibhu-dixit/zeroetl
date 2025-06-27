@@ -56,7 +56,7 @@ AWS_BUCKET_NAME=s3a://your-iceberg-warehouse-bucket/
 ```
 ## Quick Start
 
-### Set up your environment:
+1. **Set up your environment:**
 
 - Install zeroetl (see Installation).
 - Create a .env file (see Configuration).
@@ -67,7 +67,7 @@ id,name,email,signup_ts,age
 6,Eve,eve@example.com,2023-01-06T17:00:00.000Z,45
 7,Frank,frank@example.com,2023-01-07T18:00:00.000Z,50
 ```
-### Create a pipeline script (e.g., `my_pipeline.py`):
+2. **Create a pipeline script (e.g., `my_pipeline.py`):**
 ```python
 import pandas as pd
 from pyspark.sql.types import StructType, StringType, IntegerType, TimestampType
@@ -150,7 +150,7 @@ def run_pipeline():
 if __name__ == "__main__":
     run_pipeline()
 ```
-### Run pipeline
+3. **Run pipeline**
 ```bash
 python my_pipeline.py
 ```
