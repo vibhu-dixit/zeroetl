@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "zeroetl"
+version = "0.1.0"
+description = "A Python package for ingesting data into Iceberg tables using PySpark."
+readme = "README.md"
+requires-python = ">=3.8"
+license = {file = "LICENSE"}
+keywords = ["pyspark", "iceberg", "data-ingestion", "etl"]
+authors = [
+    {name = "Vibhu Dixit", email = "vibhu.dixit02@gmail.com"},
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+dependencies = [
+    "pyspark==3.5.1",
+    "pandas>=2.0.0",
+    "pyarrow>=15.0.0",
+    "pyiceberg[pyarrow]>=0.5.0",
+    "python-dotenv>=1.0.0"
+]
+
+[project.urls]
+Homepage = "https://github.com/vibhu-dixit/zeroetl"
+"Bug Tracker" = "https://github.com/vibhu-dixit/zeroetl/issues"
