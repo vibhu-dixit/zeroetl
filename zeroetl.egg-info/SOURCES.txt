@@ -1,0 +1,12 @@
+LICENSE
+README.md
+pyproject.toml
+tests/test_ingestion.py
+zeroetl/__init__.py
+zeroetl/ingestion.py
+zeroetl/table_management.py
+zeroetl.egg-info/PKG-INFO
+zeroetl.egg-info/SOURCES.txt
+zeroetl.egg-info/dependency_links.txt
+zeroetl.egg-info/requires.txt
+zeroetl.egg-info/top_level.txt

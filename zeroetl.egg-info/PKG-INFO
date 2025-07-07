@@ -1,0 +1,199 @@
+Metadata-Version: 2.4
+Name: zeroetl
+Version: 0.1.0
+Summary: A Python package for ingesting data into Iceberg tables using PySpark.
+Author-email: Vibhu Dixit <vibhu.dixit02@gmail.com>
+License: MIT License
+        
+        Copyright (c) 2025 Vibhu Dixit
+        
+        Permission is hereby granted, free of charge, to any person obtaining a copy
+        of this software and associated documentation files (the "Software"), to deal
+        in the Software without restriction, including without limitation the rights
+        to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+        copies of the Software, and to permit persons to whom the Software is
+        furnished to do so, subject to the following conditions:
+        
+        The above copyright notice and this permission notice shall be included in all
+        copies or substantial portions of the Software.
+        
+        THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+        IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+        FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+        AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+        LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+        OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+        SOFTWARE.
+        
+Project-URL: Homepage, https://github.com/vibhu-dixit/zeroetl
+Project-URL: Bug Tracker, https://github.com/vibhu-dixit/zeroetl/issues
+Keywords: pyspark,iceberg,data-ingestion,etl
+Classifier: Programming Language :: Python :: 3
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Operating System :: OS Independent
+Requires-Python: >=3.8
+Description-Content-Type: text/markdown
+License-File: LICENSE
+Requires-Dist: pyspark==3.5.1
+Requires-Dist: pandas>=2.0.0
+Requires-Dist: pyarrow>=15.0.0
+Requires-Dist: pyiceberg[pyarrow]>=0.5.0
+Requires-Dist: python-dotenv>=1.0.0
+Dynamic: license-file
+
+# zeroetl
+
+`zeroetl` is a Python package designed to simplify data ingestion into Apache Iceberg tables using PySpark. It provides flexible functions for ingesting data from various sources (Pandas DataFrames, CSV files) and robust utilities for managing Iceberg tables, including schema creation, data deduplication, snapshot expiration, table compaction, and querying. The package emphasizes a "zero-ETL" approach by streamlining direct ingestion and leveraging Iceberg's capabilities for data quality and table optimization.
+
+## Features
+
+- **Flexible Data Ingestion**:
+  - Ingest data from Pandas DataFrames or CSV files with user-defined schema support.
+  - Automatically converts string-based timestamp columns to PySpark `TimestampType`.
+
+- **Built-in Deduplication**: Performs deduplication (similar to a `MERGE` operation) based on a configurable primary key and timestamp column, ensuring data quality.
+
+- **Iceberg Table Creation**: Programmatically create or replace Iceberg tables with custom schemas, partitioning, and locations.
+
+- **Snapshot Management**: Expire old snapshots to optimize storage and query performance.
+
+- **Table Optimization**: Compact data files to improve read performance.
+
+- **Flexible Querying**: Query the latest table state or perform time-travel queries using snapshot IDs.
+
+- **Configuration-Driven**: Highly configurable via Python dictionaries for Spark settings, table names, and more.
+
+- **PySpark Integration**: Leverages Apache Spark for scalable data processing.
+
+## Installation
+
+### Prerequisites
+
+- Python 3.8+
+- `pip` (Python package installer)
+- Access to an S3-compatible storage for your Iceberg warehouse.
+- AWS credentials configured as environment variables or in a `.env` file (see [Configuration](#configuration)).
+
+### Install via Pip (Recommended for Users)
+
+```bash
+python -m venv venv
+source venv/bin/activate  # On Windows: `venv\Scripts\activate`
+pip install zeroetl
+```
+### Install from Source (For Developers)
+```bash
+git clone https://github.com/your_username/zeroetl.git
+cd zeroetl
+python -m venv venv
+source venv/bin/activate  # On Windows: `venv\Scripts\activate`
+pip install -r requirements.txt
+pip install -e .
+```
+## Configuration
+Create a `.env` file in your project directory with the following:
+```plaintext
+AWS_ACCESS_KEY_ID=YOUR_AWS_ACCESS_KEY_ID
+AWS_SECRET_ACCESS_KEY=YOUR_AWS_SECRET_ACCESS_KEY
+AWS_BUCKET_NAME=s3a://your-iceberg-warehouse-bucket/
+```
+## Quick Start
+
+### Set up your environment:
+
+- Install zeroetl (see Installation).
+- Create a .env file (see Configuration).
+- Prepare a sample users.csv (e.g., in examples/users.csv):
+```csv
+id,name,email,signup_ts,age
+5,David,david@example.com,2023-01-05T16:00:00.000Z,40
+6,Eve,eve@example.com,2023-01-06T17:00:00.000Z,45
+7,Frank,frank@example.com,2023-01-07T18:00:00.000Z,50
+```
+### Create a pipeline script (e.g., `my_pipeline.py`):
+```python
+import pandas as pd
+from pyspark.sql.types import StructType, StringType, IntegerType, TimestampType
+from zeroetl.ingestion import ingest_data_to_iceberg
+from zeroetl.table_management import create_iceberg_table, query_iceberg_table
+import os
+
+# Ingestion configuration
+INGESTION_CONFIG = {
+    "table_name": "mycatalog.db.users",
+    "primary_key_col": "id",
+    "timestamp_col": "signup_ts",
+    "warehouse_path": os.getenv("AWS_BUCKET_NAME"),
+    "spark_configs": {"spark.sql.shuffle.partitions": "4"}
+}
+
+# Table management configuration
+TABLE_MANAGEMENT_CONFIG = {
+    "table_name": "mycatalog.db.users",
+    "warehouse_path": os.getenv("AWS_BUCKET_NAME"),
+    "spark_configs": {"spark.sql.shuffle.partitions": "4"},
+    "query_type": "latest"
+}
+
+# Input schema
+user_defined_schema = StructType() \
+    .add("id", StringType()) \
+    .add("name", StringType()) \
+    .add("email", StringType()) \
+    .add("signup_ts", StringType()) \
+    .add("age", IntegerType())
+
+# Table creation configuration
+CREATE_TABLE_CONFIG = {
+    "table_name": INGESTION_CONFIG["table_name"],
+    "schema": "id STRING, name STRING, email STRING, signup_ts TIMESTAMP, age INT",
+    "partition_spec": "days(signup_ts), bucket(16, id)",
+    "location": "s3a://zero-etl-mesh-demo/warehouse/db/users",
+    "warehouse_path": INGESTION_CONFIG["warehouse_path"]
+}
+
+def run_pipeline():
+    try:
+        # Create Iceberg table
+        print(f"Creating table: {CREATE_TABLE_CONFIG['table_name']}")
+        create_iceberg_table(CREATE_TABLE_CONFIG)
+
+        # Ingest data from Pandas DataFrame
+        pandas_data = pd.DataFrame({
+            'id': ['1', '2', '4'],
+            'name': ['Alice', 'Bob', 'Charlie'],
+            'email': ['alice@example.com', 'bob@example.com', 'charlie@example.com'],
+            'signup_ts': ['2023-01-01T12:00:00.000Z', '2023-01-02T13:00:00.000Z', '2023-01-04T15:00:00.000Z'],
+            'age': [25, 30, 35]
+        })
+        ingest_data_to_iceberg(
+            input_data=pandas_data,
+            schema=user_defined_schema,
+            source_type='pandas_df',
+            config=INGESTION_CONFIG
+        )
+
+        # Ingest data from CSV
+        csv_file_path = 'examples/users.csv'
+        ingest_data_to_iceberg(
+            input_data=csv_file_path,
+            schema=user_defined_schema,
+            source_type='csv',
+            config=INGESTION_CONFIG
+        )
+
+        # Query table
+        query_iceberg_table(TABLE_MANAGEMENT_CONFIG)
+
+    except Exception as e:
+        print(f"Error: {e}")
+        import traceback
+        traceback.print_exc()
+
+if __name__ == "__main__":
+    run_pipeline()
+```
+### Run pipeline
+```bash
+python my_pipeline.py
+```
