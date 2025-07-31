@@ -1,3 +1,4 @@
+This repository is a Python package derived from my main project, [ZeroETL Data Mesh pipeline](https://github.com/vibhu-dixit/Zero-ETL-Pipeline).
 # zeroetl
 
 `zeroetl` is a Python package designed to simplify data ingestion into Apache Iceberg tables using PySpark. It provides flexible functions for ingesting data from various sources (Pandas DataFrames, CSV files) and robust utilities for managing Iceberg tables, including schema creation, data deduplication, snapshot expiration, table compaction, and querying. The package emphasizes a "zero-ETL" approach by streamlining direct ingestion and leveraging Iceberg's capabilities for data quality and table optimization.
