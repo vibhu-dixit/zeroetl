@@ -5,16 +5,17 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "zeroetl"
 version = "0.1.0"
-description = "A Python package for ingesting data into Iceberg tables using PySpark."
+description = "Ingest CSV and pandas data into Apache Iceberg tables with PySpark."
 readme = "README.md"
-requires-python = ">=3.8"
+requires-python = ">=3.10"
 license = {file = "LICENSE"}
-keywords = ["pyspark", "iceberg", "data-ingestion", "etl"]
+keywords = ["apache-iceberg", "iceberg", "pyspark", "data-ingestion", "csv", "pandas", "etl", "data-pipeline", "upsert"]
 authors = [
     {name = "Vibhu Dixit", email = "vibhu.dixit02@gmail.com"},
 ]
 classifiers = [
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
 ]
@@ -26,6 +27,14 @@ dependencies = [
     "python-dotenv>=1.0.0"
 ]
 
+[project.optional-dependencies]
+mcp = ["mcp>=2,<3"]
+
+[project.scripts]
+zeroetl-mcp = "zeroetl.mcp_server:main"
+
 [project.urls]
 Homepage = "https://github.com/vibhu-dixit/zeroetl"
-"Bug Tracker" = "https://github.com/vibhu-dixit/zeroetl/issues"
+Source = "https://github.com/vibhu-dixit/zeroetl"
+Documentation = "https://github.com/vibhu-dixit/zeroetl#readme"
+Issues = "https://github.com/vibhu-dixit/zeroetl/issues"

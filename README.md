@@ -1,36 +1,42 @@
-This repository is a Python package derived from my main project, [ZeroETL Data Mesh pipeline](https://github.com/vibhu-dixit/Zero-ETL-Pipeline).
 # zeroetl
 
-`zeroetl` is a Python package designed to simplify data ingestion into Apache Iceberg tables using PySpark. It provides flexible functions for ingesting data from various sources (Pandas DataFrames, CSV files) and robust utilities for managing Iceberg tables, including schema creation, data deduplication, snapshot expiration, table compaction, and querying. The package emphasizes a "zero-ETL" approach by streamlining direct ingestion and leveraging Iceberg's capabilities for data quality and table optimization.
+`zeroetl` is a Python package for loading CSV files and pandas DataFrames into Apache Iceberg tables with PySpark. It provides timestamp-based upserts, table creation, snapshot expiration, file compaction, and snapshot-aware queries for Python data pipelines.
 
-## Features
+[Install from PyPI](https://pypi.org/project/zeroetl/) · [Source code](https://github.com/vibhu-dixit/zeroetl) · [Report an issue](https://github.com/vibhu-dixit/zeroetl/issues)
 
-- **Flexible Data Ingestion**:
-  - Ingest data from Pandas DataFrames or CSV files with user-defined schema support.
-  - Automatically converts string-based timestamp columns to PySpark `TimestampType`.
+Use `zeroetl` when a Python or Spark pipeline needs to ingest batch data into Iceberg and apply updates by primary key and timestamp. It provides a Python API and an optional local MCP server for agent hosts.
 
-- **Built-in Deduplication**: Performs deduplication (similar to a `MERGE` operation) based on a configurable primary key and timestamp column, ensuring data quality.
+## Capabilities
 
-- **Iceberg Table Creation**: Programmatically create or replace Iceberg tables with custom schemas, partitioning, and locations.
+- Read input from pandas DataFrames or CSV files.
+- Create partitioned Iceberg tables without replacing existing tables.
+- Deduplicate each incoming batch by primary key and timestamp, then update existing records only when the incoming timestamp is newer.
+- Query the latest table state or read a specific Iceberg snapshot.
+- Compact data files and expire old table snapshots.
+- Connect a local AI agent host through the optional stdio MCP server. It exposes read-only queries by default; write operations require explicit opt-in.
 
-- **Snapshot Management**: Expire old snapshots to optimize storage and query performance.
+The package configures a Hadoop Iceberg catalog named `mycatalog`. Spark and a compatible Iceberg Spark runtime must be available to the application. Set the warehouse with `warehouse_path` or `AWS_BUCKET_NAME`; set S3 credentials with `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`.
 
-- **Table Optimization**: Compact data files to improve read performance.
+## Python API
 
-- **Flexible Querying**: Query the latest table state or perform time-travel queries using snapshot IDs.
+| Function | Purpose |
+| --- | --- |
+| `ingest_data_to_iceberg` | Ingest a pandas DataFrame or CSV file and upsert by key and timestamp. |
+| `create_iceberg_table` | Create an Iceberg table if it does not already exist. |
+| `query_iceberg_table` | Return up to 20 rows from the current table state or a selected snapshot. |
+| `compact_iceberg_table` | Rewrite data files to compact an Iceberg table. |
+| `expire_iceberg_snapshots` | Remove snapshots older than the configured retention interval. |
 
-- **Configuration-Driven**: Highly configurable via Python dictionaries for Spark settings, table names, and more.
-
-- **PySpark Integration**: Leverages Apache Spark for scalable data processing.
+The ingestion helpers accept a schema and configuration dictionary. See the [quick start](#quick-start) and [`examples/run_ingestion.py`](examples/run_ingestion.py) for usage.
 
 ## Installation
 
 ### Prerequisites
 
-- Python 3.8+
+- Python 3.10+
 - `pip` (Python package installer)
-- Access to an S3-compatible storage for your Iceberg warehouse.
-- AWS credentials configured as environment variables or in a `.env` file (see [Configuration](#configuration)).
+- A Spark installation with a compatible Apache Iceberg runtime configured.
+- An Iceberg warehouse location. The included Spark configuration uses the `s3a://` protocol; provide S3 credentials through environment variables or a `.env` file (see [Configuration](#configuration)).
 
 ### Install via Pip (Recommended for Users)
 
@@ -39,14 +45,44 @@ python -m venv venv
 source venv/bin/activate  # On Windows: `venv\Scripts\activate`
 pip install zeroetl
 ```
-### Install from Source (For Developers)
+
+To install the local MCP server support:
+
 ```bash
-git clone https://github.com/your_username/zeroetl.git
+pip install "zeroetl[mcp]"
+zeroetl-mcp
+```
+
+Configure your agent host to launch `zeroetl-mcp` as an MCP server using the `stdio` transport. The process reads its warehouse and AWS credentials from the environment, just like the Python API. By default, it exposes `query_table` only. Set `ZEROETL_MCP_ENABLE_WRITES=true` to expose table creation, CSV ingestion, compaction, and snapshot expiration. Before enabling CSV ingestion, set `ZEROETL_MCP_ALLOWED_INPUT_PREFIXES` to comma-separated local directory roots or URI prefixes the agent may read. Inputs outside those prefixes are rejected. Never place credentials in tool arguments.
+
+Example MCP client configuration:
+
+```json
+{
+  "mcpServers": {
+    "zeroetl": {
+      "command": "zeroetl-mcp",
+      "args": [],
+      "env": {
+        "AWS_BUCKET_NAME": "s3a://your-iceberg-warehouse-bucket/"
+      }
+    }
+  }
+}
+```
+### Install from Source
+```bash
+git clone https://github.com/vibhu-dixit/zeroetl.git
 cd zeroetl
 python -m venv venv
 source venv/bin/activate  # On Windows: `venv\Scripts\activate`
-pip install -r requirements.txt
 pip install -e .
+```
+
+For the local MCP server, install the optional extra instead:
+
+```bash
+pip install -e '.[mcp]'
 ```
 ## Configuration
 Create a `.env` file in your project directory with the following:
@@ -55,6 +91,7 @@ AWS_ACCESS_KEY_ID=YOUR_AWS_ACCESS_KEY_ID
 AWS_SECRET_ACCESS_KEY=YOUR_AWS_SECRET_ACCESS_KEY
 AWS_BUCKET_NAME=s3a://your-iceberg-warehouse-bucket/
 ```
+Table creation is non-destructive: an existing table is left as-is. Manage table schema changes separately.
 ## Quick Start
 
 1. **Set up your environment:**

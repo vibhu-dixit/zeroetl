@@ -32,45 +32,56 @@ def get_spark_session(app_name: str, spark_configs: dict = None, warehouse_path:
             
     return builder.getOrCreate()
 
-def ingest_data_to_iceberg(input_data, schema: StructType, source_type: str, config: dict):
+def ingest_data_to_iceberg(input_data, schema: StructType, source_type: str, config: dict, *, spark=None):
     table_name = config.get("table_name", "mycatalog.db.users")
     primary_key = config.get("primary_key_col", "id")
     timestamp_col = config.get("timestamp_col", "signup_ts")
     warehouse_path = config.get("warehouse_path")
     spark_configs = config.get("spark_configs", {})
     
-    spark = get_spark_session(app_name="ZeroETLIngestion", spark_configs=spark_configs, warehouse_path=warehouse_path)
+    owned = spark is None
+    if owned:
+        spark = get_spark_session(app_name="ZeroETLIngestion", spark_configs=spark_configs, warehouse_path=warehouse_path)
 
-    if source_type == 'csv':
-        df = spark.read.schema(schema).csv(input_data)
-        print(f"Reading data from CSV at {input_data}...")
-    elif source_type == 'pandas_df':
-        df = spark.createDataFrame(input_data, schema=schema)
-        print("Reading data from pandas DataFrame...")
-    else:
-        raise ValueError("Invalid source_type. Choose 'pandas_df' or 'csv'.")
-
-    # The signup_ts column from the input is a string, convert it to TimestampType.
-    if isinstance(schema[timestamp_col].dataType, StringType):
-        df = df.withColumn(timestamp_col, to_timestamp(col(timestamp_col), "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'"))
-
-    print(f"Starting deduplication via overwrite for table {table_name}...")
     try:
+        if source_type == 'csv':
+            csv_options = {"header": "true"}
+            csv_options.update(config.get("csv_options", {}))
+            reader = spark.read.schema(schema)
+            for key, value in csv_options.items():
+                reader = reader.option(key, value)
+            df = reader.csv(input_data)
+            print(f"Reading data from CSV at {input_data}...")
+        elif source_type == 'pandas_df':
+            df = spark.createDataFrame(input_data, schema=schema)
+            print("Reading data from pandas DataFrame...")
+        else:
+            raise ValueError("Invalid source_type. Choose 'pandas_df' or 'csv'.")
+
+        if isinstance(schema[timestamp_col].dataType, StringType):
+            timestamp_format = config.get("timestamp_format", "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'")
+            df = df.withColumn(timestamp_col, to_timestamp(col(timestamp_col), timestamp_format) if timestamp_format else to_timestamp(col(timestamp_col)))
+
+        print(f"Starting deduplication and merge for table {table_name}...")
         # Deduplication logic
-        existing_table_df = spark.table(table_name)
-        combined_df = existing_table_df.unionByName(df, allowMissingColumns=True)
         window_spec = Window.partitionBy(primary_key).orderBy(desc(timestamp_col))
-        deduplicated_df = combined_df.withColumn("row_num", row_number().over(window_spec))\
+        deduplicated_df = df.withColumn("row_num", row_number().over(window_spec))\
                                     .filter(col("row_num") == 1)\
                                     .drop("row_num")
-
-        deduplicated_df.writeTo(table_name) \
-            .using("iceberg") \
-            .overwritePartitions()
+        deduplicated_df.createOrReplaceTempView("zeroetl_incoming")
+        spark.sql(f"""
+            MERGE INTO {table_name} AS target
+            USING zeroetl_incoming AS source
+            ON target.{primary_key} = source.{primary_key}
+            WHEN MATCHED AND source.{timestamp_col} > target.{timestamp_col}
+              THEN UPDATE SET *
+            WHEN NOT MATCHED THEN INSERT *
+        """)
 
         print("Deduplication via overwrite completed successfully.")
     except Exception as e:
         print(f"Error during deduplication: {e}")
         raise
     finally:
-        spark.stop()
+        if owned:
+            spark.stop()

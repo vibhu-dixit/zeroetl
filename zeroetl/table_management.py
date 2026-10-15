@@ -28,7 +28,7 @@ def get_spark_session(app_name: str, spark_configs: dict = None, warehouse_path:
             
     return builder.getOrCreate()
 
-def create_iceberg_table(table_config: dict):
+def create_iceberg_table(table_config: dict, *, spark=None):
     table_name = table_config.get("table_name", "mycatalog.db.users")
     schema_str = table_config.get("schema", "id STRING, name STRING, email STRING, signup_ts TIMESTAMP, age INT")
     partition_spec = table_config.get("partition_spec", "days(signup_ts), bucket(16, id)")
@@ -36,10 +36,12 @@ def create_iceberg_table(table_config: dict):
     warehouse_path = table_config.get("warehouse_path")
     spark_configs = table_config.get("spark_configs", {})
     
-    spark = get_spark_session(app_name="IcebergTableCreation", spark_configs=spark_configs, warehouse_path=warehouse_path)
+    owned = spark is None
+    if owned:
+        spark = get_spark_session(app_name="IcebergTableCreation", spark_configs=spark_configs, warehouse_path=warehouse_path)
     
     create_table_sql = f"""
-        CREATE OR REPLACE TABLE {table_name} (
+        CREATE TABLE IF NOT EXISTS {table_name} (
             {schema_str}
         )
         USING iceberg
@@ -47,30 +49,38 @@ def create_iceberg_table(table_config: dict):
         LOCATION '{location}'
         TBLPROPERTIES ('format-version'='2')
     """
-    print(f"Creating new table '{table_name}' with schema and partitioning...")
-    spark.sql(create_table_sql)
-    print(f"New partitioned table '{table_name}' created successfully.")
-    spark.sql(f"DESCRIBE TABLE {table_name};").show()
-    spark.stop()
+    try:
+        print(f"Creating new table '{table_name}' with schema and partitioning...")
+        spark.sql(create_table_sql)
+        print(f"New partitioned table '{table_name}' created successfully.")
+        spark.sql(f"DESCRIBE TABLE {table_name};").show()
+    finally:
+        if owned:
+            spark.stop()
 
-def expire_iceberg_snapshots(table_config: dict):
+def expire_iceberg_snapshots(table_config: dict, *, spark=None):
     table_name = table_config.get("table_name", "mycatalog.db.users")
     older_than_seconds = table_config.get("older_than_seconds", 30)
     warehouse_path = table_config.get("warehouse_path")
     spark_configs = table_config.get("spark_configs", {})
 
-    spark = get_spark_session(app_name="IcebergSnapshotExpiration", spark_configs=spark_configs, warehouse_path=warehouse_path)
-    spark.sparkContext.setLogLevel("WARN")
-    expiration_timestamp = (datetime.now() - timedelta(seconds=older_than_seconds)).isoformat(timespec='milliseconds') + 'Z'
+    owned = spark is None
+    if owned:
+        spark = get_spark_session(app_name="IcebergSnapshotExpiration", spark_configs=spark_configs, warehouse_path=warehouse_path)
+    try:
+        spark.sparkContext.setLogLevel("WARN")
+        expiration_timestamp = (datetime.now() - timedelta(seconds=older_than_seconds)).isoformat(timespec='milliseconds') + 'Z'
 
-    print(f"Expiring snapshots in {table_name} older than {expiration_timestamp}...")
-    spark.sql(f"CALL mycatalog.system.expire_snapshots(table => '{table_name}', older_than => TIMESTAMP '{expiration_timestamp}')").show()
+        print(f"Expiring snapshots in {table_name} older than {expiration_timestamp}...")
+        spark.sql(f"CALL mycatalog.system.expire_snapshots(table => '{table_name}', older_than => TIMESTAMP '{expiration_timestamp}')").show()
 
-    print("Verifying history after expiration")
-    spark.sql(f"SELECT * FROM {table_name}.history ORDER BY made_current_at DESC").show(truncate=False)
-    spark.stop()
+        print("Verifying history after expiration")
+        spark.sql(f"SELECT * FROM {table_name}.history ORDER BY made_current_at DESC").show(truncate=False)
+    finally:
+        if owned:
+            spark.stop()
 
-def compact_iceberg_table(table_config: dict):
+def compact_iceberg_table(table_config: dict, *, spark=None):
     """
     Compacts an Iceberg table by rewriting data files.
     """
@@ -78,34 +88,44 @@ def compact_iceberg_table(table_config: dict):
     warehouse_path = table_config.get("warehouse_path")
     spark_configs = table_config.get("spark_configs", {})
 
-    spark = get_spark_session(app_name="IcebergTableCompaction", spark_configs=spark_configs, warehouse_path=warehouse_path)
+    owned = spark is None
+    if owned:
+        spark = get_spark_session(app_name="IcebergTableCompaction", spark_configs=spark_configs, warehouse_path=warehouse_path)
     try:
         print(f"Starting Iceberg table compaction for {table_name}...")
         spark.sql(f"CALL mycatalog.system.rewrite_data_files('{table_name}')")
         print("Iceberg table compaction completed.")
     except Exception as e:
         print(f"Error during compaction: {e}")
+        raise
     finally:
-        spark.stop()
+        if owned:
+            spark.stop()
 
-def query_iceberg_table(table_config: dict):
+def query_iceberg_table(table_config: dict, *, spark=None):
     table_name = table_config.get("table_name", "mycatalog.db.users")
     query_type = table_config.get("query_type", "latest")
     snapshot_id = table_config.get("snapshot_id")
     warehouse_path = table_config.get("warehouse_path")
     spark_configs = table_config.get("spark_configs", {})
 
-    spark = get_spark_session(app_name="QueryUsers", spark_configs=spark_configs, warehouse_path=warehouse_path)
+    owned = spark is None
+    if owned:
+        spark = get_spark_session(app_name="QueryUsers", spark_configs=spark_configs, warehouse_path=warehouse_path)
     try:
         if query_type == 'time_travel' and snapshot_id:
             print(f"--- Time travel to a specific snapshot using VERSION AS OF {snapshot_id} ---")
-            spark.sql(f"SELECT * FROM {table_name} VERSION AS OF {snapshot_id}").show(truncate=False)
+            result = spark.sql(f"SELECT * FROM {table_name} VERSION AS OF {snapshot_id}").limit(20).collect()
         elif query_type == 'latest':
             print("--- Querying the latest state of the table ---")
-            spark.sql(f"SELECT * FROM {table_name}").show(truncate=False)
+            result = spark.sql(f"SELECT * FROM {table_name}").limit(20).collect()
         else:
-            print("Invalid query type or missing snapshot ID.")
+            raise ValueError("Invalid query type or missing snapshot ID.")
+        print(result)
+        return result
     except Exception as e:
         print(f"Error querying table: {e}")
+        raise
     finally:
-        spark.stop()
+        if owned:
+            spark.stop()
