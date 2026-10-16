@@ -1,7 +1,7 @@
 from unittest.mock import MagicMock
 
 import pytest
-from pyspark.sql.types import StringType, StructField, StructType
+from pyspark.sql.types import StringType, StructField, StructType, TimestampType
 
 from zeroetl import ingestion, table_management
 
@@ -37,7 +37,7 @@ def test_caller_owned_ingestion_session_survives_reader_error():
     spark.read.schema.side_effect = RuntimeError("CSV failed")
     with pytest.raises(RuntimeError, match="CSV failed"):
         ingestion.ingest_data_to_iceberg(
-            "input.csv", StructType([StructField("id", StringType())]),
+            "input.csv", StructType([StructField("id", StringType()), StructField("signup_ts", TimestampType())]),
             "csv", {}, spark=spark,
         )
     spark.stop.assert_not_called()
@@ -49,6 +49,6 @@ def test_owned_ingestion_session_stops_when_reader_fails(monkeypatch):
     monkeypatch.setattr(ingestion, "get_spark_session", lambda **_: spark)
     with pytest.raises(RuntimeError, match="CSV failed"):
         ingestion.ingest_data_to_iceberg(
-            "input.csv", StructType([StructField("id", StringType())]), "csv", {},
+            "input.csv", StructType([StructField("id", StringType()), StructField("signup_ts", TimestampType())]), "csv", {},
         )
     spark.stop.assert_called_once()

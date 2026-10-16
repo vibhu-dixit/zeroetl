@@ -173,8 +173,8 @@ def create_server():
         if snapshot_id is not None:
             validate_snapshot(snapshot_id)
         with redirect_stdout(sys.stderr):
-            rows = query_iceberg_table({"table_name": table_name, "query_type": query_type, "snapshot_id": snapshot_id}, spark=state["spark"])
-        return _json_safe(rows)
+            result = query_iceberg_table({"table_name": table_name, "query_type": query_type, "snapshot_id": snapshot_id}, spark=state["spark"])
+        return result.to_dict()["rows"]
 
     if os.getenv("ZEROETL_MCP_ENABLE_WRITES") == "true":
         @server.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True))

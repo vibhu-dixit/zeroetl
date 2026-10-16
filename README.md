@@ -10,12 +10,16 @@ Use `zeroetl` when a Python or Spark pipeline needs to ingest batch data into Ic
 
 - Read input from pandas DataFrames or CSV files.
 - Create partitioned Iceberg tables without replacing existing tables.
-- Deduplicate each incoming batch by primary key and timestamp, then update existing records only when the incoming timestamp is newer.
+- Ingest in `upsert` (default), `append`, or explicit full-table `overwrite` mode.
+- Validate required keys and timestamps; fail on invalid rows by default or append them to an explicitly configured quarantine path.
+- Opt into additive schema evolution for new nullable columns; incompatible type changes are rejected.
 - Query the latest table state or read a specific Iceberg snapshot.
 - Compact data files and expire old table snapshots.
+- Reuse caller-owned Spark sessions and return structured `OperationResult` values.
+- Run the same operations through the JSON `zeroetl` CLI with dry-run support.
 - Connect a local AI agent host through the optional stdio MCP server. It exposes read-only queries by default; write operations require explicit opt-in.
 
-The package configures a Hadoop Iceberg catalog named `mycatalog`. Spark and a compatible Iceberg Spark runtime must be available to the application. Set the warehouse with `warehouse_path` or `AWS_BUCKET_NAME`; set S3 credentials with `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`.
+The package configures a Hadoop Iceberg catalog named `mycatalog`. Spark and a compatible Iceberg Spark runtime must be available to the application. Set the warehouse with `warehouse_path` or `AWS_BUCKET_NAME`; for S3 warehouses, set credentials with `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`. Local filesystem warehouse paths do not require AWS credentials.
 
 ## Python API
 
@@ -27,7 +31,55 @@ The package configures a Hadoop Iceberg catalog named `mycatalog`. Spark and a c
 | `compact_iceberg_table` | Rewrite data files to compact an Iceberg table. |
 | `expire_iceberg_snapshots` | Remove snapshots older than the configured retention interval. |
 
-The ingestion helpers accept a schema and configuration dictionary. See the [quick start](#quick-start) and [`examples/run_ingestion.py`](examples/run_ingestion.py) for usage.
+All operations accept an optional keyword-only `spark` session. A supplied session stays running and remains owned by the caller; when omitted, ZeroETL creates and stops a session. Each successful operation returns an `OperationResult` with `operation`, `table_name`, `status`, optional `counts`, optional query `rows`, and `message`. Call `result.to_dict()` to get JSON-safe values. Ingestion counts include `received`, `accepted`, and `quarantined`; query counts include `returned`.
+
+Ingestion options live in the existing config dictionary: `mode` (`upsert`, `append`, or `overwrite`), `evolve_schema` (default `false`), `invalid_rows` (`fail` by default or `quarantine`), and `quarantine_path` (required for quarantine). Empty append and upsert inputs do nothing; an explicitly selected empty overwrite clears the table. Quarantine files are written in Parquet format and appended to the configured path.
+
+See the [quick start](#quick-start) and [`examples/run_ingestion.py`](examples/run_ingestion.py) for Python usage.
+
+## Command line
+
+The `zeroetl` command reads a JSON config with `spark` and `table` objects; ingestion also uses an `ingestion` object. For example:
+
+```json
+{
+  "spark": {
+    "warehouse_path": "file:///data/iceberg-warehouse",
+    "spark_configs": {"spark.master": "local[*]"}
+  },
+  "table": {
+    "table_name": "mycatalog.db.users",
+    "schema_sql": "id STRING, signup_ts TIMESTAMP, name STRING",
+    "partition_spec": "days(signup_ts)",
+    "location": null
+  },
+  "ingestion": {
+    "input_data": "users.csv",
+    "source_type": "csv",
+    "schema": [
+      {"name": "id", "type": "string", "nullable": false},
+      {"name": "signup_ts", "type": "string", "nullable": false},
+      {"name": "name", "type": "string"}
+    ],
+    "primary_key_col": "id",
+    "timestamp_col": "signup_ts",
+    "mode": "upsert"
+  }
+}
+```
+
+Supported commands are `check`, `create-table`, `ingest`, `query`, `compact`, and `expire-snapshots`. Use `--dry-run` to validate and print the planned operation without starting Spark or changing table data. Use `--output json` for machine-readable results; failures return a nonzero exit code and a structured error.
+
+```bash
+zeroetl --config zeroetl.json --dry-run --output json ingest
+zeroetl --config zeroetl.json create-table
+zeroetl --config zeroetl.json --output json ingest
+zeroetl --config zeroetl.json query --output json
+zeroetl --config zeroetl.json compact
+zeroetl --config zeroetl.json expire-snapshots
+```
+
+The CLI schema `type` accepts `string`, `int`/`integer`, `bigint`/`long`, `float`, `double`, `boolean`, `date`, `timestamp`, and `binary`. Pandas input can be supplied as a JSON array of objects; CSV input uses a path. Set `table.location` to `null` to let Iceberg derive the table path from the configured warehouse.
 
 ## Installation
 

@@ -1,87 +1,140 @@
-import os
-import pandas as pd
-from pyspark.sql import SparkSession
-from pyspark.sql.functions import col, desc, row_number, to_timestamp
-from pyspark.sql.types import StructType, StringType
+from pyspark.sql import functions as F
+from pyspark.sql.types import StringType
 from pyspark.sql.window import Window
-from dotenv import load_dotenv
+from uuid import uuid4
 
-def get_spark_session(app_name: str, spark_configs: dict = None, warehouse_path: str = None):
-    load_dotenv()
+from .results import OperationResult
+from .spark import get_spark_session
 
-    final_warehouse_path = warehouse_path or os.getenv("AWS_BUCKET_NAME")
-    if not final_warehouse_path:
-        raise ValueError("Warehouse path not provided and AWS_BUCKET_NAME environment variable not set.")
 
-    builder = (
-        SparkSession.builder
-        .appName(app_name)
-        .config("spark.sql.extensions", "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions")
-        .config("spark.sql.catalog.mycatalog", "org.apache.iceberg.spark.SparkCatalog")
-        .config("spark.sql.catalog.mycatalog.type", "hadoop")
-        .config("spark.sql.catalog.mycatalog.warehouse", final_warehouse_path)
-        .config("spark.hadoop.fs.s3a.access.key", os.getenv("AWS_ACCESS_KEY_ID"))
-        .config("spark.hadoop.fs.s3a.secret.key", os.getenv("AWS_SECRET_ACCESS_KEY"))
-        .config("spark.hadoop.fs.s3a.endpoint", "s3.amazonaws.com")
-        .config("spark.hadoop.fs.s3a.path.style.access", "true")
-        .config("spark.sql.default.catalog", "mycatalog")
-    )
-    if spark_configs:
-        for key, value in spark_configs.items():
-            builder = builder.config(key, value)
-            
-    return builder.getOrCreate()
-
-def ingest_data_to_iceberg(input_data, schema: StructType, source_type: str, config: dict, *, spark=None):
+def ingest_data_to_iceberg(input_data, schema, source_type: str, config: dict, *, spark=None):
+    """Ingest CSV or pandas data into Iceberg using upsert, append, or overwrite."""
     table_name = config.get("table_name", "mycatalog.db.users")
     primary_key = config.get("primary_key_col", "id")
     timestamp_col = config.get("timestamp_col", "signup_ts")
-    warehouse_path = config.get("warehouse_path")
-    spark_configs = config.get("spark_configs", {})
-    
+    mode = config.get("mode", "upsert")
+    invalid_policy = config.get("invalid_rows", "fail")
+    quarantine_path = config.get("quarantine_path")
+    evolve_schema = config.get("evolve_schema", False)
+    if mode not in ("upsert", "append", "overwrite"):
+        raise ValueError("mode must be 'upsert', 'append', or 'overwrite'.")
+    if invalid_policy not in ("fail", "quarantine"):
+        raise ValueError("invalid_rows must be 'fail' or 'quarantine'.")
+    if invalid_policy == "quarantine" and not quarantine_path:
+        raise ValueError("quarantine_path is required when invalid_rows='quarantine'.")
+    if not isinstance(evolve_schema, bool):
+        raise ValueError("evolve_schema must be a boolean.")
+    if source_type not in ("csv", "pandas_df"):
+        raise ValueError("Invalid source_type. Choose 'pandas_df' or 'csv'.")
+    if primary_key not in schema.fieldNames() or timestamp_col not in schema.fieldNames():
+        raise ValueError("The schema must include the configured primary key and timestamp columns.")
+
     owned = spark is None
     if owned:
-        spark = get_spark_session(app_name="ZeroETLIngestion", spark_configs=spark_configs, warehouse_path=warehouse_path)
-
+        spark = get_spark_session(
+            app_name="ZeroETLIngestion",
+            spark_configs=config.get("spark_configs", {}),
+            warehouse_path=config.get("warehouse_path"),
+        )
     try:
-        if source_type == 'csv':
-            csv_options = {"header": "true"}
-            csv_options.update(config.get("csv_options", {}))
+        if source_type == "csv":
+            options = {"header": "true", **config.get("csv_options", {})}
             reader = spark.read.schema(schema)
-            for key, value in csv_options.items():
+            for key, value in options.items():
                 reader = reader.option(key, value)
             df = reader.csv(input_data)
-            print(f"Reading data from CSV at {input_data}...")
-        elif source_type == 'pandas_df':
-            df = spark.createDataFrame(input_data, schema=schema)
-            print("Reading data from pandas DataFrame...")
         else:
-            raise ValueError("Invalid source_type. Choose 'pandas_df' or 'csv'.")
+            df = spark.createDataFrame(input_data, schema=schema)
 
         if isinstance(schema[timestamp_col].dataType, StringType):
             timestamp_format = config.get("timestamp_format", "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'")
-            df = df.withColumn(timestamp_col, to_timestamp(col(timestamp_col), timestamp_format) if timestamp_format else to_timestamp(col(timestamp_col)))
+            df = df.withColumn(
+                timestamp_col,
+                F.try_to_timestamp(F.col(timestamp_col), F.lit(timestamp_format))
+                if timestamp_format else F.try_to_timestamp(F.col(timestamp_col)),
+            )
 
-        print(f"Starting deduplication and merge for table {table_name}...")
-        # Deduplication logic
-        window_spec = Window.partitionBy(primary_key).orderBy(desc(timestamp_col))
-        deduplicated_df = df.withColumn("row_num", row_number().over(window_spec))\
-                                    .filter(col("row_num") == 1)\
-                                    .drop("row_num")
-        deduplicated_df.createOrReplaceTempView("zeroetl_incoming")
-        spark.sql(f"""
-            MERGE INTO {table_name} AS target
-            USING zeroetl_incoming AS source
-            ON target.{primary_key} = source.{primary_key}
-            WHEN MATCHED AND source.{timestamp_col} > target.{timestamp_col}
-              THEN UPDATE SET *
-            WHEN NOT MATCHED THEN INSERT *
-        """)
+        target_schema = spark.table(table_name).schema
+        input_fields = {field.name: field for field in df.schema.fields}
+        target_fields = {field.name: field for field in target_schema.fields}
+        additions = []
+        for name, field in input_fields.items():
+            target = target_fields.get(name)
+            if target is None:
+                if not evolve_schema:
+                    raise ValueError(f"Input column {name!r} is missing from the target table; enable evolve_schema to add it.")
+                if not field.nullable:
+                    raise ValueError(f"New column {name!r} must be nullable for schema evolution.")
+                additions.append(field)
+            elif field.dataType != target.dataType:
+                raise TypeError(
+                    f"Unsupported type change for column {name!r}: "
+                    f"target is {target.dataType.simpleString()}, input is {field.dataType.simpleString()}."
+                )
 
-        print("Deduplication via overwrite completed successfully.")
-    except Exception as e:
-        print(f"Error during deduplication: {e}")
-        raise
+        missing = [field for name, field in target_fields.items() if name not in input_fields]
+        required_missing = [field.name for field in missing if not field.nullable]
+        if required_missing:
+            raise ValueError(f"Input is missing required target columns: {', '.join(required_missing)}.")
+        for field in missing:
+            df = df.withColumn(field.name, F.lit(None).cast(field.dataType))
+
+        received = df.count()
+        valid = F.col(primary_key).isNotNull() & F.col(timestamp_col).isNotNull()
+        invalid = df.filter(~valid)
+        quarantined = invalid.count()
+        if quarantined and invalid_policy == "fail":
+            raise ValueError(
+                f"Ingestion rejected {quarantined} invalid row(s): "
+                f"{primary_key} and {timestamp_col} must be non-null and timestamps must parse."
+            )
+        if quarantined:
+            invalid.withColumn(
+                "_zeroetl_error",
+                F.when(F.col(primary_key).isNull(), F.lit(f"null {primary_key}"))
+                .otherwise(F.lit(f"null or invalid {timestamp_col}")),
+            ).write.mode("append").parquet(quarantine_path)
+        accepted_df = df.filter(valid)
+        accepted = received - quarantined
+
+        for field in additions:
+            spark.sql(f"ALTER TABLE {table_name} ADD COLUMN {field.name} {field.dataType.simpleString()}")
+
+        if accepted == 0 and mode in ("upsert", "append"):
+            return OperationResult("ingest", table_name, counts={
+                "received": received, "accepted": 0, "quarantined": quarantined,
+            })
+
+        # Align source ordering with the table schema so INSERT/MERGE * stays safe.
+        target_names = [field.name for field in target_schema.fields] + [field.name for field in additions]
+        accepted_df = accepted_df.select(*target_names)
+        if mode == "append":
+            accepted_df.writeTo(table_name).append()
+        elif mode == "overwrite":
+            accepted_df.writeTo(table_name).overwrite(F.lit(True))
+        else:
+            order = Window.partitionBy(primary_key).orderBy(
+                F.desc(timestamp_col), F.desc(F.xxhash64(*[F.col(name) for name in target_names]))
+            )
+            deduplicated = accepted_df.withColumn("_zeroetl_rank", F.row_number().over(order)) \
+                .filter(F.col("_zeroetl_rank") == 1).drop("_zeroetl_rank")
+            view_name = f"zeroetl_incoming_{uuid4().hex}"
+            deduplicated.createOrReplaceTempView(view_name)
+            try:
+                spark.sql(f"""
+                    MERGE INTO {table_name} AS target
+                    USING {view_name} AS source
+                    ON target.{primary_key} = source.{primary_key}
+                    WHEN MATCHED AND source.{timestamp_col} > target.{timestamp_col}
+                      THEN UPDATE SET *
+                    WHEN NOT MATCHED THEN INSERT *
+                """)
+            finally:
+                spark.catalog.dropTempView(view_name)
+
+        return OperationResult("ingest", table_name, counts={
+            "received": received, "accepted": accepted, "quarantined": quarantined,
+        })
     finally:
         if owned:
             spark.stop()

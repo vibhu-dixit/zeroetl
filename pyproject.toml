@@ -31,6 +31,7 @@ dependencies = [
 mcp = ["mcp>=2,<3"]
 
 [project.scripts]
+zeroetl = "zeroetl.cli:main"
 zeroetl-mcp = "zeroetl.mcp_server:main"
 
 [project.urls]

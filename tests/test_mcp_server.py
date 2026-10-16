@@ -12,6 +12,7 @@ from mcp import ClientSession
 from mcp.shared.memory import create_client_server_memory_streams
 
 from zeroetl import mcp_server
+from zeroetl.results import OperationResult
 
 
 @pytest.mark.parametrize("table", ["db.users", "mycatalog.db.users; DROP TABLE x", "mycatalog.db.bad-name"])
@@ -122,7 +123,7 @@ def test_query_tool_returns_json_safe_rows_and_keeps_stdout_clean(monkeypatch, c
     row.asDict.return_value = {"at": datetime(2024, 1, 2, 3, 4, 5), "count": 1}
     def query(config, *, spark):
         print("legacy diagnostic")
-        return [row]
+        return OperationResult("query", config["table_name"], rows=[row])
     monkeypatch.setattr(mcp_server, "query_iceberg_table", query)
     server = mcp_server.create_server()
 
@@ -140,7 +141,7 @@ def test_client_round_trip_uses_one_session(monkeypatch):
     spark = MagicMock()
     created = []
     monkeypatch.setattr(mcp_server, "get_spark_session", lambda **_: created.append(spark) or spark)
-    monkeypatch.setattr(mcp_server, "query_iceberg_table", lambda config, *, spark: [{"id": "1"}])
+    monkeypatch.setattr(mcp_server, "query_iceberg_table", lambda config, *, spark: OperationResult("query", config["table_name"], rows=[{"id": "1"}]))
     server = mcp_server.create_server()
 
     async def round_trip():
